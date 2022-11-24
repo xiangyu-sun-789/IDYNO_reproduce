@@ -6,6 +6,13 @@ import torch.nn as nn
 import numpy as np
 import math
 
+"""
+IDYNO consists of 3 MLPs:
+    1. a MLP for instantaneous edges W. This should be identical to notears-MLP?
+    2. a 2nd MLP for time-lagged edges A. This one does not need acyclicity constraint?
+    3. a 3rd MLP to concatenate the first 2 MLPs.
+"""
+
 
 class IDYNO_W(nn.Module):
     def __init__(self, dims, bias=True):
