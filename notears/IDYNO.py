@@ -1,3 +1,5 @@
+from lingam.utils import make_dot
+
 from notears.locally_connected import LocallyConnected
 from notears.lbfgsb_scipy import LBFGSBScipy
 from notears.trace_expm import trace_expm
@@ -147,6 +149,23 @@ def train_IDYNO(model: nn.Module,
     return W_est
 
 
+def draw_DAGs_using_LINGAM(file_name, adjacency_matrix, variable_names):
+    # https://github.com/WillKoehrsen/Data-Analysis/issues/36#issuecomment-498710710
+
+    # direction of the adjacency matrix needs to be transposed.
+    # in LINGAM, the adjacency matrix is defined as column variable -> row variable
+    # in NOTEARS, the W is defined as row variable -> column variable
+
+    # the default value here was 0.01. Instead of not drawing edges smaller than 0.01, we eliminate edges
+    # smaller than `w_threshold` from the estimated graph so that we can set the value here to 0.
+    lower_limit = 0.0
+
+    dot = make_dot(np.transpose(adjacency_matrix), labels=variable_names, lower_limit=lower_limit)
+
+    dot.format = 'png'
+    dot.render(file_name)
+
+
 def main():
     torch.set_default_dtype(torch.double)
     np.set_printoptions(precision=3)
@@ -155,8 +174,12 @@ def main():
     ut.set_random_seed(123)
 
     n, d, s0, graph_type, sem_type = 200, 5, 9, 'ER', 'mim'
+
+    variable_names = ['X{}'.format(j) for j in range(1, d + 1)]
+
     B_true = ut.simulate_dag(d, s0, graph_type)
     np.savetxt('W_true.csv', B_true, delimiter=',')
+    draw_DAGs_using_LINGAM("./W_true", B_true, variable_names)
 
     X = ut.simulate_nonlinear_sem(B_true, n, sem_type)
     np.savetxt('X.csv', X, delimiter=',')
@@ -167,6 +190,8 @@ def main():
     np.savetxt('W_est.csv', W_est, delimiter=',')
     acc = ut.count_accuracy(B_true, W_est != 0)
     print(acc)
+
+    draw_DAGs_using_LINGAM("./W_est", W_est, variable_names)
 
 
 if __name__ == '__main__':
