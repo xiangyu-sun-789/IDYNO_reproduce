@@ -168,21 +168,44 @@ class IDYNO_A(nn.Module):
         return W
 
 
-def squared_loss(output_W, output_A, target):
+class MLP3(nn.Module):
+    def __init__(self, dims, bias=True):
+        super(MLP3, self).__init__()
+        assert len(dims) >= 2
+        assert dims[-1] == 1
+        d = dims[0]
+        self.dims = dims
+        self.fc1 = nn.Linear(d * 2, d * dims[1], bias=bias)
+        layers = []
+        for l in range(len(dims) - 2):
+            layers.append(LocallyConnected(d, dims[l + 1], dims[l + 2], bias=bias))
+        self.fc2 = nn.ModuleList(layers)
+
+    def forward(self, x1, x2):  # [n, d] -> [n, d]
+        x = torch.cat((x1, x2), dim=1)
+        x = self.fc1(x)  # [n, d * m1]
+        x = x.view(-1, self.dims[0], self.dims[1])  # [n, d, m1]
+        for fc in self.fc2:
+            x = torch.sigmoid(x)  # [n, d, m1]
+            x = fc(x)  # [n, d, m2]
+        x = x.squeeze(dim=2)  # [n, d]
+        return x
+
+
+def squared_loss(output, target):
     n = target.shape[0]
-    # TODO: a 3rd MLP
-    mlp3_out = (output_W + output_A)
-    loss = 0.5 / n * torch.sum((mlp3_out - target) ** 2)
+    loss = 0.5 / n * torch.sum((output - target) ** 2)
     return loss
 
 
-def dual_ascent_step(model_W, model_A, X, Xlags, lambda1, lambda2, rho, alpha, h, rho_max):
+def dual_ascent_step(model_W, model_A, model_3, X, Xlags, lambda1, lambda2, rho, alpha, h, rho_max):
     """Perform one step of dual ascent in augmented Lagrangian."""
     h_new = None
 
     parameters_W = model_W.parameters()
     parameters_A = model_A.parameters()
-    params = list(parameters_W) + list(parameters_A)
+    parameters_3 = model_3.parameters()
+    params = list(parameters_W) + list(parameters_A) + list(parameters_3)
     optimizer = LBFGSBScipy(params)
 
     X_torch = torch.from_numpy(X)
@@ -190,9 +213,12 @@ def dual_ascent_step(model_W, model_A, X, Xlags, lambda1, lambda2, rho, alpha, h
     while rho < rho_max:
         def closure():
             optimizer.zero_grad()
+
             X_hat_W = model_W(X_torch)
             X_hat_A = model_A(Xlags_torch)
-            loss = squared_loss(X_hat_W, X_hat_A, X_torch)
+            X_hat = model_3(X_hat_W, X_hat_A)
+
+            loss = squared_loss(X_hat, X_torch)
             h_val = model_W.h_func()
             penalty = 0.5 * rho * h_val * h_val + alpha * h_val
             l2_reg = 0.5 * lambda2 * (model_W.l2_reg() + model_A.l2_reg())
@@ -214,6 +240,7 @@ def dual_ascent_step(model_W, model_A, X, Xlags, lambda1, lambda2, rho, alpha, h
 
 def train_IDYNO(model_W: nn.Module,
                 model_A: nn.Module,
+                model_3: nn.Module,
                 X: np.ndarray,
                 Xlags: np.ndarray,
                 lambda1: float = 0.,
@@ -224,7 +251,7 @@ def train_IDYNO(model_W: nn.Module,
                 w_threshold: float = 0.0):
     rho, alpha, h = 1.0, 0.0, np.inf
     for _ in range(max_iter):
-        rho, alpha, h = dual_ascent_step(model_W, model_A, X, Xlags, lambda1, lambda2,
+        rho, alpha, h = dual_ascent_step(model_W, model_A, model_3, X, Xlags, lambda1, lambda2,
                                          rho, alpha, h, rho_max)
         if h <= h_tol or rho >= rho_max:
             break
@@ -292,8 +319,9 @@ def main():
 
     model_W = IDYNO_W(dims=[d, 10, 1], bias=True)
     model_A = IDYNO_A(dims=[d, 10, 1], p=p, bias=True)
-    w_threshold = 0.1
-    W_est, A_est = train_IDYNO(model_W, model_A, X, Xlags, lambda1=0.01, lambda2=0.01, w_threshold=w_threshold)
+    model_3 = MLP3(dims=[d, 10, 1], bias=True)
+    w_threshold = 0.0
+    W_est, A_est = train_IDYNO(model_W, model_A, model_3, X, Xlags, lambda1=0.01, lambda2=0.01, w_threshold=w_threshold)
 
     np.savetxt(result_folder + 'W_est.csv', W_est, delimiter=',')
     draw_DAGs_using_LINGAM(result_folder + "W_est", W_est, variable_names_W)
