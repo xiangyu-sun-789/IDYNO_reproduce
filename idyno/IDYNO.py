@@ -251,6 +251,7 @@ def train_IDYNO(model_W: nn.Module,
                 w_threshold: float = 0.0):
     rho, alpha, h = 1.0, 0.0, np.inf
     for _ in range(max_iter):
+        print("iter: ", _)
         rho, alpha, h = dual_ascent_step(model_W, model_A, model_3, X, Xlags, lambda1, lambda2,
                                          rho, alpha, h, rho_max)
         if h <= h_tol or rho >= rho_max:
@@ -314,6 +315,7 @@ def main():
 
     # concatenate data for time lags, copy from dynotears
     X, Xlags = DynamicDataTransformer(p=p).fit_transform(normalized_data_df, return_df=False)
+    # Xlags: X1_(t-1), X2_(t-1), X3_(t-1), X1_(t-2), X2_(t-2), X3_(t-2), ...
     print("X.shape: ", X.shape)
     print("Xlags.shape: ", Xlags.shape)
 
@@ -321,7 +323,8 @@ def main():
     model_A = IDYNO_A(dims=[d, 10, 1], p=p, bias=True)
     model_3 = MLP3(dims=[d, 10, 1], bias=True)
     w_threshold = 0.0
-    W_est, A_est = train_IDYNO(model_W, model_A, model_3, X, Xlags, lambda1=0.01, lambda2=0.01, w_threshold=w_threshold)
+    W_est, A_est = train_IDYNO(model_W, model_A, model_3, X, Xlags, lambda1=0.00001, lambda2=0.00001,
+                               w_threshold=w_threshold)
 
     np.savetxt(result_folder + 'W_est.csv', W_est, delimiter=',')
     draw_DAGs_using_LINGAM(result_folder + "W_est", W_est, variable_names_W)
