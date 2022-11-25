@@ -15,9 +15,9 @@ import math
 
 """
 IDYNO consists of 3 MLPs:
-    1. a MLP for instantaneous edges W. This should be identical to notears-MLP?
+    1. a MLP for instantaneous edges W. This should be identical to notears-MLP.
     2. a 2nd MLP for time-lagged edges A. This one does not need acyclicity constraint. 
-        But need the constraint to allow edges only pointing to the current time.
+        All the estimated edges in A points to instantaneous time.
     3. a 3rd MLP to concatenate the first 2 MLPs.
 """
 
@@ -102,15 +102,16 @@ class IDYNO_W(nn.Module):
 
 
 class IDYNO_A(nn.Module):
-    def __init__(self, dims, bias=True):
+    def __init__(self, dims, p, bias=True):
         super(IDYNO_A, self).__init__()
         assert len(dims) >= 2
         assert dims[-1] == 1
         d = dims[0]
         self.dims = dims
+        self.p = p
         # fc1: variable splitting for l1
-        self.fc1_pos = nn.Linear(d, d * dims[1], bias=bias)
-        self.fc1_neg = nn.Linear(d, d * dims[1], bias=bias)
+        self.fc1_pos = nn.Linear(d * self.p, d * dims[1], bias=bias)
+        self.fc1_neg = nn.Linear(d * self.p, d * dims[1], bias=bias)
         self.fc1_pos.weight.bounds = self._bounds()
         self.fc1_neg.weight.bounds = self._bounds()
         # fc2: local linear layers
@@ -124,11 +125,8 @@ class IDYNO_A(nn.Module):
         bounds = []
         for j in range(d):
             for m in range(self.dims[1]):
-                for i in range(d):
-                    if i == j:
-                        bound = (0, 0)
-                    else:
-                        bound = (0, None)
+                for i in range(d * self.p):
+                    bound = (0, None)
                     bounds.append(bound)
         return bounds
 
@@ -142,17 +140,7 @@ class IDYNO_A(nn.Module):
         return x
 
     def h_func(self):
-        """Constrain 2-norm-squared of fc1 weights along m1 dim to be a DAG"""
-        d = self.dims[0]
-        fc1_weight = self.fc1_pos.weight - self.fc1_neg.weight  # [j * m1, i]
-        fc1_weight = fc1_weight.view(d, -1, d)  # [j, m1, i]
-        A = torch.sum(fc1_weight * fc1_weight, dim=1).t()  # [i, j]
-        h = trace_expm(A) - d  # (Zheng et al. 2018)
-        # A different formulation, slightly faster at the cost of numerical stability
-        # M = torch.eye(d) + A / d  # (Yu et al. 2019)
-        # E = torch.matrix_power(M, d - 1)
-        # h = (E.t() * M).sum() - d
-        return h
+        return torch.tensor(0)
 
     def l2_reg(self):
         """Take 2-norm-squared of all parameters"""
@@ -173,40 +161,49 @@ class IDYNO_A(nn.Module):
         """Get W from fc1 weights, take 2-norm over m1 dim"""
         d = self.dims[0]
         fc1_weight = self.fc1_pos.weight - self.fc1_neg.weight  # [j * m1, i]
-        fc1_weight = fc1_weight.view(d, -1, d)  # [j, m1, i]
+        fc1_weight = fc1_weight.view(d, -1, d * self.p)  # [j, m1, i]
         A = torch.sum(fc1_weight * fc1_weight, dim=1).t()  # [i, j]
         W = torch.sqrt(A)  # [i, j]
         W = W.cpu().detach().numpy()  # [i, j]
         return W
 
 
-def squared_loss(output, target):
+def squared_loss(output_W, output_A, target):
     n = target.shape[0]
-    loss = 0.5 / n * torch.sum((output - target) ** 2)
+    # TODO: a 3rd MLP
+    mlp3_out = (output_W + output_A)
+    loss = 0.5 / n * torch.sum((mlp3_out - target) ** 2)
     return loss
 
 
-def dual_ascent_step(model, X, lambda1, lambda2, rho, alpha, h, rho_max):
+def dual_ascent_step(model_W, model_A, X, Xlags, lambda1, lambda2, rho, alpha, h, rho_max):
     """Perform one step of dual ascent in augmented Lagrangian."""
     h_new = None
-    optimizer = LBFGSBScipy(model.parameters())
+
+    parameters_W = model_W.parameters()
+    parameters_A = model_A.parameters()
+    params = list(parameters_W) + list(parameters_A)
+    optimizer = LBFGSBScipy(params)
+
     X_torch = torch.from_numpy(X)
+    Xlags_torch = torch.from_numpy(Xlags)
     while rho < rho_max:
         def closure():
             optimizer.zero_grad()
-            X_hat = model(X_torch)
-            loss = squared_loss(X_hat, X_torch)
-            h_val = model.h_func()
+            X_hat_W = model_W(X_torch)
+            X_hat_A = model_A(Xlags_torch)
+            loss = squared_loss(X_hat_W, X_hat_A, X_torch)
+            h_val = model_W.h_func()
             penalty = 0.5 * rho * h_val * h_val + alpha * h_val
-            l2_reg = 0.5 * lambda2 * model.l2_reg()
-            l1_reg = lambda1 * model.fc1_l1_reg()
+            l2_reg = 0.5 * lambda2 * (model_W.l2_reg() + model_A.l2_reg())
+            l1_reg = lambda1 * (model_W.fc1_l1_reg() + model_A.fc1_l1_reg())
             primal_obj = loss + penalty + l2_reg + l1_reg
             primal_obj.backward()
             return primal_obj
 
         optimizer.step(closure)  # NOTE: updates model in-place
         with torch.no_grad():
-            h_new = model.h_func().item()
+            h_new = model_W.h_func().item()
         if h_new > 0.25 * h:
             rho *= 10
         else:
@@ -215,23 +212,30 @@ def dual_ascent_step(model, X, lambda1, lambda2, rho, alpha, h, rho_max):
     return rho, alpha, h_new
 
 
-def train_IDYNO(model: nn.Module,
+def train_IDYNO(model_W: nn.Module,
+                model_A: nn.Module,
                 X: np.ndarray,
+                Xlags: np.ndarray,
                 lambda1: float = 0.,
                 lambda2: float = 0.,
                 max_iter: int = 100,
                 h_tol: float = 1e-8,
                 rho_max: float = 1e+16,
-                w_threshold: float = 0.3):
+                w_threshold: float = 0.0):
     rho, alpha, h = 1.0, 0.0, np.inf
     for _ in range(max_iter):
-        rho, alpha, h = dual_ascent_step(model, X, lambda1, lambda2,
+        rho, alpha, h = dual_ascent_step(model_W, model_A, X, Xlags, lambda1, lambda2,
                                          rho, alpha, h, rho_max)
         if h <= h_tol or rho >= rho_max:
             break
-    W_est = model.fc1_to_adj()
+
+    W_est = model_W.fc1_to_adj()
     W_est[np.abs(W_est) < w_threshold] = 0
-    return W_est
+
+    A_est = model_A.fc1_to_adj()
+    A_est[np.abs(A_est) < w_threshold] = 0
+
+    return W_est, A_est
 
 
 def draw_DAGs_using_LINGAM(file_name, adjacency_matrix, variable_names):
@@ -264,11 +268,11 @@ def main():
     n, d, s0, graph_type, sem_type = 200, 5, 9, 'ER', 'mim'
     p = 3
 
-    variable_names = ['X{}'.format(j) for j in range(1, d + 1)]
+    variable_names_W = ['X{}'.format(j) for j in range(1, d + 1)]
 
     B_true = ut.simulate_dag(d, s0, graph_type)
     np.savetxt(result_folder + 'W_true.csv', B_true, delimiter=',')
-    draw_DAGs_using_LINGAM(result_folder + "W_true", B_true, variable_names)
+    draw_DAGs_using_LINGAM(result_folder + "W_true", B_true, variable_names_W)
 
     X = ut.simulate_nonlinear_sem(B_true, n, sem_type)
     np.savetxt(result_folder + 'X.csv', X, delimiter=',')
@@ -279,26 +283,35 @@ def main():
     scaler = preprocessing.StandardScaler().fit(X)
     normalized_X = scaler.transform(X)
 
-    normalized_data_df = pd.DataFrame(normalized_X, index=None, columns=variable_names)
+    normalized_data_df = pd.DataFrame(normalized_X, index=None, columns=variable_names_W)
 
     # concatenate data for time lags, copy from dynotears
     X, Xlags = DynamicDataTransformer(p=p).fit_transform(normalized_data_df, return_df=False)
     print("X.shape: ", X.shape)
     print("Xlags.shape: ", Xlags.shape)
 
-    model = IDYNO_W(dims=[d, 10, 1], bias=True)
-    W_est = train_IDYNO(model, X, lambda1=0.01, lambda2=0.01)
-    assert ut.is_dag(W_est)
+    model_W = IDYNO_W(dims=[d, 10, 1], bias=True)
+    model_A = IDYNO_A(dims=[d, 10, 1], p=p, bias=True)
+    w_threshold = 0.1
+    W_est, A_est = train_IDYNO(model_W, model_A, X, Xlags, lambda1=0.01, lambda2=0.01, w_threshold=w_threshold)
+
     np.savetxt(result_folder + 'W_est.csv', W_est, delimiter=',')
+    draw_DAGs_using_LINGAM(result_folder + "W_est", W_est, variable_names_W)
+
+    variable_names_A = ['X{}_(t-{})'.format(j, k) if k != 0 else 'X{}_(t)'.format(j, k) for k in range(0, p + 1) for j
+                        in range(1, d + 1)]
+    print("variable_names_A: ", variable_names_A)
+
+    A_est_full = np.zeros((d * (p + 1), d * (p + 1)))
+    A_est_full[d:, :d] = A_est
+    np.savetxt(result_folder + 'A_est_full.csv', A_est_full, delimiter=',')
+    draw_DAGs_using_LINGAM(result_folder + "A_est", A_est_full, variable_names_A)
+
+    assert ut.is_dag(W_est)
+
+    # TODO:
     acc = ut.count_accuracy(B_true, W_est != 0)
     print(acc)
-
-    draw_DAGs_using_LINGAM(result_folder + "W_est", W_est, variable_names)
-
-    model = IDYNO_A(dims=[d, 10, 1], bias=True)
-    A_est = train_IDYNO(model, X, lambda1=0.01, lambda2=0.01)
-    np.savetxt(result_folder + 'A_est.csv', A_est, delimiter=',')
-    draw_DAGs_using_LINGAM(result_folder + "A_est", A_est, variable_names)
 
 
 if __name__ == '__main__':
