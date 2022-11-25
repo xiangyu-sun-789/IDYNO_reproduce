@@ -1,5 +1,10 @@
-from lingam.utils import make_dot
+import os
 
+import pandas as pd
+from lingam.utils import make_dot
+from sklearn import preprocessing
+
+from causalnex.structure.transformers import DynamicDataTransformer
 from notears.locally_connected import LocallyConnected
 from notears.lbfgsb_scipy import LBFGSBScipy
 from notears.trace_expm import trace_expm
@@ -168,6 +173,9 @@ def draw_DAGs_using_LINGAM(file_name, adjacency_matrix, variable_names):
 
 
 def main():
+    result_folder = "./temp_result/"
+    os.makedirs(result_folder, exist_ok=True)
+
     torch.set_default_dtype(torch.double)
     np.set_printoptions(precision=3)
 
@@ -175,24 +183,38 @@ def main():
     ut.set_random_seed(123)
 
     n, d, s0, graph_type, sem_type = 200, 5, 9, 'ER', 'mim'
+    p = 3
 
     variable_names = ['X{}'.format(j) for j in range(1, d + 1)]
 
     B_true = ut.simulate_dag(d, s0, graph_type)
-    np.savetxt('W_true.csv', B_true, delimiter=',')
-    draw_DAGs_using_LINGAM("./W_true", B_true, variable_names)
+    np.savetxt(result_folder + 'W_true.csv', B_true, delimiter=',')
+    draw_DAGs_using_LINGAM(result_folder + "W_true", B_true, variable_names)
 
     X = ut.simulate_nonlinear_sem(B_true, n, sem_type)
-    np.savetxt('X.csv', X, delimiter=',')
+    np.savetxt(result_folder + 'X.csv', X, delimiter=',')
+
+    print("X.shape: ", X.shape)
+
+    # normalize X
+    scaler = preprocessing.StandardScaler().fit(X)
+    normalized_X = scaler.transform(X)
+
+    normalized_data_df = pd.DataFrame(normalized_X, index=None, columns=variable_names)
+
+    # concatenate data for time lags, copy from dynotears
+    X, Xlags = DynamicDataTransformer(p=p).fit_transform(normalized_data_df, return_df=False)
+    print("X.shape: ", X.shape)
+    print("Xlags.shape: ", Xlags.shape)
 
     model = IDYNO_W(dims=[d, 10, 1], bias=True)
     W_est = train_IDYNO(model, X, lambda1=0.01, lambda2=0.01)
     assert ut.is_dag(W_est)
-    np.savetxt('W_est.csv', W_est, delimiter=',')
+    np.savetxt(result_folder + 'W_est.csv', W_est, delimiter=',')
     acc = ut.count_accuracy(B_true, W_est != 0)
     print(acc)
 
-    draw_DAGs_using_LINGAM("./W_est", W_est, variable_names)
+    draw_DAGs_using_LINGAM(result_folder + "W_est", W_est, variable_names)
 
 
 if __name__ == '__main__':
