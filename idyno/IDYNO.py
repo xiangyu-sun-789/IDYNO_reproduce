@@ -5,9 +5,9 @@ from lingam.utils import make_dot
 from sklearn import preprocessing
 
 from causalnex.structure.transformers import DynamicDataTransformer
-from notears.locally_connected import LocallyConnected
-from notears.lbfgsb_scipy import LBFGSBScipy
-from notears.trace_expm import trace_expm
+from idyno.locally_connected import LocallyConnected
+from idyno.lbfgsb_scipy import LBFGSBScipy
+from idyno.trace_expm import trace_expm
 import torch
 import torch.nn as nn
 import numpy as np
@@ -289,7 +289,7 @@ def main():
     torch.set_default_dtype(torch.double)
     np.set_printoptions(precision=3)
 
-    import notears.utils as ut
+    import idyno.utils as ut
     ut.set_random_seed(123)
 
     n, d, s0, graph_type, sem_type = 200, 5, 9, 'ER', 'mim'
