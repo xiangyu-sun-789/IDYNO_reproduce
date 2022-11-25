@@ -247,8 +247,7 @@ def train_IDYNO(model_W: nn.Module,
                 lambda2: float = 0.,
                 max_iter: int = 100,
                 h_tol: float = 1e-8,
-                rho_max: float = 1e+16,
-                w_threshold: float = 0.0):
+                rho_max: float = 1e+16):
     rho, alpha, h = 1.0, 0.0, np.inf
     for _ in range(max_iter):
         print("iter: ", _)
@@ -258,10 +257,7 @@ def train_IDYNO(model_W: nn.Module,
             break
 
     W_est = model_W.fc1_to_adj()
-    W_est[np.abs(W_est) < w_threshold] = 0
-
     A_est = model_A.fc1_to_adj()
-    A_est[np.abs(A_est) < w_threshold] = 0
 
     return W_est, A_est
 
@@ -323,8 +319,10 @@ def main():
     model_A = IDYNO_A(dims=[d, 10, 1], p=p, bias=True)
     model_3 = MLP3(dims=[d, 10, 1], bias=True)
     w_threshold = 0.0
-    W_est, A_est = train_IDYNO(model_W, model_A, model_3, X, Xlags, lambda1=0.00001, lambda2=0.00001,
-                               w_threshold=w_threshold)
+    W_est, A_est = train_IDYNO(model_W, model_A, model_3, X, Xlags, lambda1=0.00001, lambda2=0.00001)
+
+    W_est[np.abs(W_est) < w_threshold] = 0
+    A_est[np.abs(A_est) < w_threshold] = 0
 
     np.savetxt(result_folder + 'W_est.csv', W_est, delimiter=',')
     draw_DAGs_using_LINGAM(result_folder + "W_est", W_est, variable_names_W)
