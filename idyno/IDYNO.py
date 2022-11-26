@@ -208,6 +208,13 @@ def dual_ascent_step(model_W, model_A, model_3, X, Xlags, lambda1, lambda2, rho,
     params = list(parameters_W) + list(parameters_A) + list(parameters_3)
     optimizer = LBFGSBScipy(params)
 
+    if type(lambda1) == list:
+        lambda1a = lambda1[0]
+        lambda1w = lambda1[1]
+    else:
+        lambda1a = lambda1
+        lambda1w = lambda1
+
     X_torch = torch.from_numpy(X)
     Xlags_torch = torch.from_numpy(Xlags)
     while rho < rho_max:
@@ -222,8 +229,9 @@ def dual_ascent_step(model_W, model_A, model_3, X, Xlags, lambda1, lambda2, rho,
             h_val = model_W.h_func()
             penalty = 0.5 * rho * h_val * h_val + alpha * h_val
             l2_reg = 0.5 * lambda2 * (model_W.l2_reg() + model_A.l2_reg())
-            l1_reg = lambda1 * (model_W.fc1_l1_reg() + model_A.fc1_l1_reg())
-            primal_obj = loss + penalty + l2_reg + l1_reg
+            l1_reg_w = lambda1w * model_W.fc1_l1_reg()
+            l1_reg_a = lambda1a * model_A.fc1_l1_reg()
+            primal_obj = loss + penalty + l2_reg + l1_reg_w + l1_reg_a
             primal_obj.backward()
             return primal_obj
 
