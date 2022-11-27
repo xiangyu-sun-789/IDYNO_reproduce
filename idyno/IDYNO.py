@@ -191,6 +191,15 @@ class MLP3(nn.Module):
         x = x.squeeze(dim=2)  # [n, d]
         return x
 
+    def l2_reg(self):
+        """Take 2-norm-squared of all parameters"""
+        reg = 0.
+        fc1_weight = self.fc1.weight
+        reg += torch.sum(fc1_weight ** 2)
+        for fc in self.fc2:
+            reg += torch.sum(fc.weight ** 2)
+        return reg
+
 
 def squared_loss(output, target):
     n = target.shape[0]
@@ -228,7 +237,7 @@ def dual_ascent_step(model_W, model_A, model_3, X, Xlags, lambda1, lambda2, rho,
             loss = squared_loss(X_hat, X_torch)
             h_val = model_W.h_func()
             penalty = 0.5 * rho * h_val * h_val + alpha * h_val
-            l2_reg = 0.5 * lambda2 * (model_W.l2_reg() + model_A.l2_reg())
+            l2_reg = 0.5 * lambda2 * (model_W.l2_reg() + model_A.l2_reg() + model_3.l2_reg())
             l1_reg_w = lambda1w * model_W.fc1_l1_reg()
             l1_reg_a = lambda1a * model_A.fc1_l1_reg()
             primal_obj = loss + penalty + l2_reg + l1_reg_w + l1_reg_a
